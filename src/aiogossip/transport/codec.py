@@ -1,4 +1,4 @@
-from ..message_pb2 import Message
+from ..types_pb2 import Message
 
 
 def decode(data: bytes) -> Message:

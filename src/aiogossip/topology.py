@@ -4,16 +4,19 @@ import time
 
 import networkx as nx
 
-from .message_pb2 import Message, Route
 from .transport.address import parse_addr
+from .types_pb2 import Message, Route
 
 Node = collections.namedtuple("Node", ["node_id", "node_addr"])
+Node.__str__ = lambda self: f"{self.node_id.decode()}@{self.node_addr}"
+Node.__repr__ = lambda self: f"<Node: {self}>"
 
 
 class Topology:
     def __init__(self, node_id, node_addr):
         node_addr = parse_addr(node_addr)
         self.g = nx.DiGraph(node_id=node_id, node_addr=node_addr)
+
         self.create_node(node_id, node_addr=node_addr)
 
     def create_node(self, node_id, node_addr=None):
@@ -83,10 +86,10 @@ class Topology:
 
         nodes = set()
         for r in routes:
-            if r.route_id not in self.g:
-                self.create_node(r.route_id)
-                nodes.add(r.route_id)
-            self.create_node_addr(r.route_id, r.daddr)
+            if r.node_id not in self.g:
+                self.create_node(r.node_id)
+                nodes.add(r.node_id)
+            self.create_node_addr(r.node_id, r.daddr)
 
         def edge(src, dst):
             return {
@@ -97,8 +100,8 @@ class Topology:
 
         hops = ((routes[r], routes[r + 1]) for r in range(len(routes) - 1))
         for src, dst in hops:
-            self.g.add_edge(src.route_id, dst.route_id, **edge(src, dst))
-        self.g.add_edge(dst.route_id, src.route_id, **edge(dst, src))
+            self.g.add_edge(src.node_id, dst.node_id, **edge(src, dst))
+        self.g.add_edge(dst.node_id, src.node_id, **edge(dst, src))
 
         return nodes
 
@@ -153,10 +156,10 @@ class Routing:
         msg.CopyFrom(message)
 
         if not msg.routing.routes:
-            msg.routing.routes.append(Route(route_id=self.topology.node_id))
-            msg.routing.routes.append(Route(route_id=peer_id))
-        elif msg.routing.routes[-1].route_id == self.topology.node_id:
-            msg.routing.routes.append(Route(route_id=peer_id))
+            msg.routing.routes.append(Route(node_id=self.topology.node_id))
+            msg.routing.routes.append(Route(node_id=peer_id))
+        elif msg.routing.routes[-1].node_id == self.topology.node_id:
+            msg.routing.routes.append(Route(node_id=peer_id))
 
         if peer_addr.ip.is_loopback:
             peer_addr_type = "local"

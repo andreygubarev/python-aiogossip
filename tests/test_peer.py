@@ -47,8 +47,8 @@ async def test_peer_publish_ack(peers, message):
         messages.append(message)
 
     assert len(messages) == 1
-    assert messages[0].routing.src_id == peers[1].peer_id
-    assert messages[0].routing.dst_id == peers[0].peer_id
+    assert messages[0].routing.snode == peers[1].peer_id
+    assert messages[0].routing.dnode == peers[0].peer_id
 
     for peer in peers:
         await peer.disconnect()
@@ -72,8 +72,8 @@ async def test_peer_forwarding(peers, message):
     await asyncio.sleep(0.1)
 
     message.kind.append(message.Kind.REQ)
-    message.routing.src_id = peers[2].peer_id
-    message.routing.dst_id = peers[0].peer_id
+    message.routing.snode = peers[2].peer_id
+    message.routing.dnode = peers[0].peer_id
     message.payload = b"test_peer_forwarding"
     await peers[2].publish("test", message, peers=[peers[0].peer_id])
 
@@ -101,8 +101,8 @@ async def test_peer_reverse_forwarding(peers, message):
         handler_message = message.payload
 
     message.kind.append(message.Kind.REQ)
-    message.routing.src_id = peers[0].peer_id
-    message.routing.dst_id = peers[2].peer_id
+    message.routing.snode = peers[0].peer_id
+    message.routing.dnode = peers[2].peer_id
     message.payload = b"test_peer_reverse_forwarding"
     await peers[0].publish("test", message, peers=[peers[2].peer_id])
 

@@ -5,7 +5,7 @@ import itertools
 
 from .concurrency import Channel, TaskManager
 from .gossip import Gossip
-from .message_pb2 import Message
+from .types_pb2 import Message
 
 
 class Handler:
@@ -171,11 +171,11 @@ class Broker:
                     message = await chan.recv()
 
                     if Message.Kind.ACK in message.kind:
-                        acks.add(message.routing.src_id)
+                        acks.add(message.routing.snode)
                         yield message  # FIXME: don't yield acks
 
-                    elif message.routing.src_id in acks:
-                        acks.remove(message.routing.src_id)
+                    elif message.routing.snode in acks:
+                        acks.remove(message.routing.snode)
                         yield message
 
                     else:

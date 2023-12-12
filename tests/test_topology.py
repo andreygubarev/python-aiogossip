@@ -2,7 +2,7 @@
 
 # import pytest
 
-# from aiogossip.message_pb2 import Route
+# from aiogossip.types_pb2 import Route
 # from aiogossip.topology import Node, Topology
 # from aiogossip.transport.address import Address, parse_addr
 
@@ -23,7 +23,7 @@
 # def test_topology_update_route(topology, message):
 #     message.routing.routes.append(
 #         Route(
-#             route_id=b"node1",
+#             node_id=b"node1",
 #             saddr="127.0.0.1:8000",
 #             daddr="127.0.0.1:8000",
 #         )
@@ -31,7 +31,7 @@
 
 #     message.routing.routes.append(
 #         Route(
-#             route_id=b"node1",
+#             node_id=b"node1",
 #             saddr="127.0.0.1:8001",
 #         )
 #     )
@@ -44,7 +44,7 @@
 #     with pytest.raises(ValueError):
 #         message.routing.routes.append(
 #             Route(
-#                 route_id=b"node1",
+#                 node_id=b"node1",
 #                 saddr="127.0.0.1:8000",
 #                 daddr="127.0.0.1:8000",
 #             )

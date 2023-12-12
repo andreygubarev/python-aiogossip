@@ -35,8 +35,8 @@ async def test_gossip(gossips, message):
 @pytest.mark.asyncio
 async def test_send_and_receive(gossips, message):
     message.kind.append(message.Kind.REQ)
-    message.routing.src_id = gossips[0].topology.node_id
-    message.routing.dst_id = gossips[1].topology.node_id
+    message.routing.snode = gossips[0].topology.node_id
+    message.routing.dnode = gossips[1].topology.node_id
     message.payload = b"test_send_and_receive"
     await gossips[0].send(message, gossips[1].topology.node_id)
 

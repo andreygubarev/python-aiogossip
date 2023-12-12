@@ -6,10 +6,10 @@ import pytest
 
 from aiogossip.broker import Broker
 from aiogossip.gossip import Gossip
-from aiogossip.message_pb2 import Message
 from aiogossip.peer import Peer
 from aiogossip.topology import Topology
 from aiogossip.transport import Transport
+from aiogossip.types_pb2 import Message
 
 # Generic #####################################################################
 

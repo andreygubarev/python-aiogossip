@@ -5,8 +5,8 @@ import uuid
 
 from . import config
 from .concurrency.mutex import mutex
-from .message_pb2 import Message
 from .topology import Routing, Topology
+from .types_pb2 import Message
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.StreamHandler(sys.stdout))
@@ -66,11 +66,11 @@ class Gossip:
         if not message.kind:
             raise ValueError("message kind is required:", message)
 
-        if not message.routing.src_id:
-            raise ValueError("message routing.src_id is required:", message)
+        if not message.routing.snode:
+            raise ValueError("message routing.snode is required:", message)
 
-        if not message.routing.dst_id:
-            raise ValueError("message routing.dst_id is required:", message)
+        if not message.routing.dnode:
+            raise ValueError("message routing.dnode is required:", message)
 
         msg = Message()
         msg.CopyFrom(message)
@@ -86,8 +86,8 @@ class Gossip:
         msg.id = uuid.uuid4().bytes
         msg.kind.append(Message.Kind.HANDSHAKE)
         msg.kind.append(Message.Kind.SYN)
-        msg.routing.src_id = self.peer_id
-        msg.routing.dst_id = peer_id
+        msg.routing.snode = self.peer_id
+        msg.routing.dnode = peer_id
 
         return await self.send(msg, peer_id)
 
@@ -95,7 +95,7 @@ class Gossip:
         msg = Message()
         msg.CopyFrom(message)
 
-        return await self.send(msg, message.routing.dst_id)
+        return await self.send(msg, message.routing.dnode)
 
     async def send_ack(self, message):
         if message.Kind.SYN not in message.kind:
@@ -104,11 +104,11 @@ class Gossip:
         msg = Message()
         msg.id = message.id
         msg.kind.append(Message.Kind.ACK)
-        msg.routing.src_id = self.peer_id
-        msg.routing.dst_id = message.routing.src_id
+        msg.routing.snode = self.peer_id
+        msg.routing.dnode = message.routing.snode
         msg.topic = message.topic
 
-        return await self.send(msg, message.routing.src_id)
+        return await self.send(msg, message.routing.snode)
 
     async def send_gossip(self, message):
         msg = Message()
@@ -120,12 +120,12 @@ class Gossip:
         if Message.Kind.GOSSIP not in msg.kind:
             msg.kind.append(Message.Kind.GOSSIP)
 
-        if not msg.routing.src_id:
-            msg.routing.src_id = self.peer_id
+        if not msg.routing.snode:
+            msg.routing.snode = self.peer_id
 
         messages = set()
         gossip_ignore = set([self.peer_id])
-        gossip_ignore.update([r.route_id for r in msg.routing.routes])
+        gossip_ignore.update([r.node_id for r in msg.routing.routes])
 
         @mutex(self, msg.id)
         async def multicast():
@@ -135,7 +135,7 @@ class Gossip:
                 for peer_id in peer_ids:
                     m = Message()
                     m.CopyFrom(msg)
-                    m.routing.dst_id = peer_id
+                    m.routing.dnode = peer_id
                     messages.add(await self.send(m, peer_id))
                 gossip_ignore.update(peer_ids)
                 cycle += 1
@@ -148,22 +148,22 @@ class Gossip:
         msg.id = uuid.uuid4().bytes
         msg.kind.append(Message.Kind.HANDSHAKE)
         msg.kind.append(Message.Kind.SYN)
-        msg.routing.src_id = self.peer_id
+        msg.routing.snode = self.peer_id
 
         return await self.send_gossip(msg)
 
     async def recv(self):
         while True:
             msg, peer_addr = await self.transport.recv()
-            peer_id = msg.routing.routes[-1].route_id
+            peer_id = msg.routing.routes[-1].node_id
             msg = self.routing.set_recv_route(msg, peer_id, peer_addr)
 
-            route_ids = self.topology.update(msg.routing.routes)
-            for route_id in route_ids:
-                await self.send_handshake(route_id)
+            node_ids = self.topology.update(msg.routing.routes)
+            for node_id in node_ids:
+                await self.send_handshake(node_id)
 
             # forward message to destination
-            if self.peer_id != msg.routing.dst_id:
+            if self.peer_id != msg.routing.dnode:
                 await self.send_forward(msg)
                 continue
 
