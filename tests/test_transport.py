@@ -1,8 +1,10 @@
 import ipaddress
 
 import pytest
+import typeguard
 
-from aiogossip.transport.address import Address
+from aiogossip.address import Address
+from aiogossip.message import Message
 
 
 @pytest.mark.asyncio
@@ -15,19 +17,21 @@ async def test_send_recv(transport, message):
 
 
 @pytest.mark.asyncio
-async def test_send_large_packet(transport, message):
-    message.id = b"a" * (transport.PACKET_SIZE + 1)
+@pytest.mark.parametrize("instances", [2])
+async def test_send_large_packet(transport, gossips):
+    message = Message(
+        route_snode=gossips[0].node,
+        route_dnode=gossips[1].node,
+        payload={"data": "a" * 4096},
+    )
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError):
         await transport.send(message, transport.addr)
-
-    expected = f"Message size exceeds packet size of {transport.PACKET_SIZE} bytes: 4100"
-    assert str(excinfo.value) == expected
 
 
 @pytest.mark.asyncio
 async def test_send_type_errors(transport, message):
-    with pytest.raises(TypeError):
+    with pytest.raises(typeguard.TypeCheckError):
         await transport.send(message, ("127.0.0.1", 1337))
 
     with pytest.raises(TypeError):

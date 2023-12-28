@@ -1,190 +1,184 @@
-import collections
 import random
-import time
+import uuid
 
 import networkx as nx
+import typeguard
 
-from .message_pb2 import Message, Route
-from .transport.address import parse_addr
-
-Node = collections.namedtuple("Node", ["node_id", "node_addr"])
+from .endpoint import Endpoint
+from .node import Node
+from .route import Route
 
 
 class Topology:
-    def __init__(self, node_id, node_addr):
-        node_addr = parse_addr(node_addr)
-        self.g = nx.DiGraph(node_id=node_id, node_addr=node_addr)
-        self.create_node(node_id, node_addr=node_addr)
+    def __init__(self):
+        self.g = nx.DiGraph()
 
-    def create_node(self, node_id, node_addr=None):
-        self.g.add_node(node_id)
-        node = self.g.nodes[node_id]
+    @typeguard.typechecked
+    def add_node(self, node: Node) -> None:
+        """
+        Adds a node to the topology.
 
-        if "node_id" not in node:
-            node["node_id"] = node_id
+        Args:
+            node (Node): The node to be added.
 
-        if "node_addrs" not in node:
-            node["node_addrs"] = {
-                "local": None,
-                "lan": None,
-                "wan": None,
-            }
-
-        if node_addr:
-            self.create_node_addr(node_id, node_addr)
-
-    def create_node_addr(self, node_id, node_addr):
-        node = self.g.nodes[node_id]
-        node_addr = parse_addr(node_addr)
-
-        if node_addr.ip.is_loopback:
-            node_addr_type = "local"
-        elif node_addr.ip.is_private:
-            node_addr_type = "lan"
-        elif node_addr.ip.is_global:
-            node_addr_type = "wan"
+        """
+        if node.node_id in self.g:
+            self.get_node(node.node_id).addresses.update(node.addresses)
         else:
-            raise ValueError(f"Unknown address type {node_addr}")
+            self.g.add_node(node.node_id, node=node)
 
-        node["node_addrs"][node_addr_type] = node_addr
+    @typeguard.typechecked
+    def get_node(self, node_id: uuid.UUID) -> Node:
+        """
+        Retrieve a node from the topology by its ID.
 
-    def create_node_edge(self, node):
-        if node.node_id == self.node_id:
-            return
+        Args:
+            node_id (uuid.UUID): The ID of the node to retrieve.
 
-        self.create_node(node.node_id, node_addr=node.node_addr)
-        self.g.add_edge(
-            self.node_id,
-            node.node_id,
-            saddr=self.node_addr,
-            daddr=node.node_addr,
+        Returns:
+            Node: The node object.
+
+        """
+        return self.g.nodes[node_id]["node"]
+
+    @typeguard.typechecked
+    def get_random_successor_nodes(self, snode: Node, n: int, exclude_nodes: set[Node] = None) -> list[Node]:
+        """
+        Returns a list of randomly selected successor nodes from the given source node.
+
+        Args:
+            snode (Node): The source node.
+            n (int): The number of successor nodes to select.
+            exclude_nodes (set[Node], optional): Set of nodes to exclude from selection. Defaults to None.
+
+        Returns:
+            list[Node]: A list of randomly selected successor nodes.
+        """
+        routes = self.get_successor_routes(snode)
+        exclude_nodes = exclude_nodes or set()
+        dnodes = [r.dnode for r in routes if r.dnode not in exclude_nodes]
+        return random.sample(dnodes, min(n, len(dnodes)))
+
+    @typeguard.typechecked
+    def add_route(
+        self,
+        route: Route,
+    ) -> None:
+        """
+        Adds a route to the topology.
+
+        Args:
+            route (Route): The route to be added.
+
+        Returns:
+            None
+        """
+        self.g.add_edge(route.snode.node_id, route.dnode.node_id, saddr=route.saddr, daddr=route.daddr)
+
+    @typeguard.typechecked
+    def get_route(self, snode: Node, dnode: Node) -> Route:
+        """
+        Retrieve a route between two nodes in the topology.
+
+        Args:
+            snode (Node): The source node.
+            dnode (Node): The destination node.
+
+        Returns:
+            Route: The route.
+
+        """
+        return Route(
+            snode=snode,
+            saddr=self.g.edges[snode.node_id, dnode.node_id]["saddr"],
+            dnode=dnode,
+            daddr=self.g.edges[snode.node_id, dnode.node_id]["daddr"],
         )
 
-    # Node #
-    @property
-    def node_id(self):
-        return self.g.graph["node_id"]
+    @typeguard.typechecked
+    def get_shortest_route(self, snode: Node, dnode: Node) -> Route:
+        """
+        Get the shortest route between two nodes.
 
-    @property
-    def node_addr(self):
-        return self.g.graph["node_addr"]
+        Args:
+            snode (Node): The source node.
+            dnode (Node): The destination node.
 
-    @property
-    def node(self):
-        return Node(self.node_id, self.node_addr)
+        Returns:
+            Route: The shortest route between the source and destination nodes.
+        """
+        # IMPORTANT
+        path = nx.shortest_path(self.g.to_undirected(), snode.node_id, dnode.node_id)
+        return self.get_route(self.get_node(path[0]), self.get_node(path[1]))
 
-    @property
-    def _node(self):
-        return self.g.nodes[self.node_id]
+    @typeguard.typechecked
+    def get_successor_routes(self, snode: Node) -> list[Route]:
+        """
+        Get all routes originating from a node.
 
-    def update(self, routes):
-        if len(routes) < 2:
-            raise ValueError("Empty route")
+        Args:
+            snode (Node): The source node.
 
-        nodes = set()
-        for r in routes:
-            if r.route_id not in self.g:
-                self.create_node(r.route_id)
-                nodes.add(r.route_id)
-            self.create_node_addr(r.route_id, r.daddr)
+        Returns:
+            list[Route]: A list of routes originating from the node.
+        """
+        routes = []
+        for dnode in self.g.successors(snode.node_id):
+            routes.append(self.get_route(snode, self.get_node(dnode)))
+        return routes
 
-        def edge(src, dst):
-            return {
-                "saddr": parse_addr(src.daddr),
-                "daddr": parse_addr(dst.daddr),
-                "latency": abs(src.timestamp - dst.timestamp),
-            }
+    @typeguard.typechecked
+    def update_routes(self, endpoints: list[Endpoint]):
+        """
+        Update the routes in the topology based on the given list of endpoints.
 
-        hops = ((routes[r], routes[r + 1]) for r in range(len(routes) - 1))
+        Args:
+            endpoints (list[Endpoint]): A list of endpoints representing the nodes in the topology.
+
+        Raises:
+            ValueError: If the number of endpoints is less than 2.
+
+        """
+        if len(endpoints) < 2:
+            raise ValueError("Endpoints must contain at least two endpoints")
+
+        for endpoint in endpoints:
+            endpoint.node.addresses.add(endpoint.src)
+            endpoint.node.addresses.add(endpoint.dst)
+            self.add_node(endpoint.node)
+
+        # IMPORTANT: discovery
+        hops = list(zip(endpoints[:-1], endpoints[1:]))
         for src, dst in hops:
-            self.g.add_edge(src.route_id, dst.route_id, **edge(src, dst))
-        self.g.add_edge(dst.route_id, src.route_id, **edge(dst, src))
+            self.add_route(Route(src.node, src.dst, dst.node, dst.dst))
+        self.add_route(Route(dst.node, dst.dst, src.node, src.dst))
 
-        return nodes
+    def __len__(self) -> int:
+        """
+        Returns the number of nodes in the topology.
 
-    def sample(self, k, ignore=None):
-        nodes = [e[1] for e in self.g.out_edges(self.node_id)]
-        if ignore:
-            nodes = list(set(nodes) - set(ignore))
-        k = min(k, len(nodes))
-        return random.sample(nodes, k)
-
-    def __len__(self):
+        Returns:
+            int: The number of nodes in the topology.
+        """
         return len(self.g)
 
-    def __iter__(self):
-        return iter(self.g.nodes)
+    def __iter__(self) -> iter:
+        """
+        Returns an iterator over the nodes in the topology.
 
-    def __contains__(self, node_id):
-        return node_id in self.g
+        Returns:
+            iter: An iterator over the nodes in the topology.
+        """
+        return iter(self.get_node(node_id) for node_id in self.g)
 
-    def __getitem__(self, node_id):
-        return self.g.nodes[node_id]
+    def __contains__(self, node: Node) -> bool:
+        """
+        Returns True if the node is in the topology.
 
-    def to_dict(self):
-        nodes = {}
-        for node_id in self.g.nodes:
-            node_addrs = self.g.nodes[node_id]["node_addrs"]
-            node_addrs = {k: str(v) for k, v in node_addrs.items()}
-            nodes[node_id.decode()] = node_addrs
-        return nodes
+        Args:
+            node (Node): The node to check.
 
-    # Reachability #
-
-    def mark_reachable(self, node_id):
-        self.g.nodes[node_id]["reachable"] = True
-
-    def mark_unreachable(self, node_id):
-        self.g.nodes[node_id]["reachable"] = False
-
-    # Addr #
-    def get_next_peer(self, node_id):
-        path = nx.shortest_path(self.g.to_undirected(), self.node_id, node_id)
-        addr = self.g.edges[path[0], path[1]]["daddr"]
-        return path[1], parse_addr(addr)
-
-
-class Routing:
-    def __init__(self, topology):
-        self.topology = topology
-
-    def set_send_route(self, message, peer_id, peer_addr):
-        msg = Message()
-        msg.CopyFrom(message)
-
-        if not msg.routing.routes:
-            msg.routing.routes.append(Route(route_id=self.topology.node_id))
-            msg.routing.routes.append(Route(route_id=peer_id))
-        elif msg.routing.routes[-1].route_id == self.topology.node_id:
-            msg.routing.routes.append(Route(route_id=peer_id))
-
-        if peer_addr.ip.is_loopback:
-            peer_addr_type = "local"
-        elif peer_addr.ip.is_private:
-            peer_addr_type = "lan"
-        elif peer_addr.ip.is_global:
-            peer_addr_type = "wan"
-
-        node_saddrs = self.topology._node["node_addrs"]
-        node_saddr = (
-            node_saddrs.get(peer_addr_type)
-            or node_saddrs.get("wan")
-            or node_saddrs.get("lan")
-            or node_saddrs.get("local")
-        )
-        if not node_saddr:
-            raise ValueError(f"Unknown address type {peer_addr}")
-
-        msg.routing.routes[-1].daddr = f"{peer_addr[0]}:{peer_addr[1]}"
-        msg.routing.routes[-2].saddr = f"{node_saddr.ip}:{node_saddr.port}"
-        msg.routing.routes[-2].timestamp = int(time.time_ns())
-        return msg
-
-    def set_recv_route(self, message, peer_id, peer_addr):
-        msg = Message()
-        msg.CopyFrom(message)
-
-        msg.routing.routes[-2].daddr = f"{peer_addr[0]}:{peer_addr[1]}"
-        msg.routing.routes[-1].saddr = f"{self.topology.node_addr.ip}:{self.topology.node_addr.port}"
-        msg.routing.routes[-1].timestamp = int(time.time_ns())
-        return msg
+        Returns:
+            bool: True if the node is in the topology.
+        """
+        return node.node_id in self.g

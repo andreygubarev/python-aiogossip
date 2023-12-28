@@ -2,25 +2,11 @@ import collections
 import functools
 import time
 
-from ..config import MUTEX_TTL
-
+MUTEX_TTL = 60
 MUTEX = collections.defaultdict(dict)
 
 
 def mutex(owner, mutex_id, mutex_ttl=MUTEX_TTL):
-    """
-    Decorator that provides mutual exclusion for a function based on the owner and mutex_id.
-
-    Args:
-        owner (str): The owner of the mutex.
-        mutex_id (str): The identifier of the mutex.
-        mutex_ttl (int, optional): The time-to-live (TTL) for the mutex in seconds. Defaults to MUTEX_TTL.
-
-    Returns:
-        function: The decorated function.
-
-    """
-
     def decorator(func):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):

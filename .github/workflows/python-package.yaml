@@ -43,7 +43,7 @@ jobs:
         python -m pipenv install --dev
 
     - name: Test with pytest
-      run: python -m pipenv run make test
+      run: python -m pipenv run make test coverage
 
   build:
     runs-on: ubuntu-latest

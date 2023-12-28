@@ -34,7 +34,7 @@ exclude = ["tests"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "--cov --cov-report term-missing"
+addopts = "--cov-report term-missing"
 
 testpaths = ["tests"]
 pythonpath = ["src"]

@@ -1,56 +1,58 @@
-import logging
+import dataclasses
 import math
-import sys
-import uuid
 
-from . import config
-from .concurrency.mutex import mutex
-from .message_pb2 import Message
-from .topology import Routing, Topology
+import typeguard
 
-logger = logging.getLogger(__name__)
-logger.addHandler(logging.StreamHandler(sys.stdout))
-logger.setLevel(getattr(logging, config.LOG_LEVEL))
+from .concurrency import mutex
+from .endpoint import Endpoint
+from .message import Message, update_recv_endpoints, update_send_endpoints
+from .node import Node
+from .topology import Topology
+from .transport import Transport
 
 
 class Gossip:
-    """
-    Gossip class represents a gossip protocol implementation.
-
-    Attributes:
-        FANOUT (int): The default fanout value for the gossip protocol.
-    """
-
-    FANOUT = 5
-
-    def __init__(self, transport, fanout=None, peer_id=None):
+    @typeguard.typechecked
+    def __init__(self, node: Node, transport: Transport, fanout: int = 5):
         """
         Initialize a Gossip instance.
 
         Args:
-            transport (Transport): The transport object used for sending and receiving messages.
-            fanout (int, optional): The fanout value for the gossip protocol. Defaults to None.
-            peer_id (bytes, optional): The ID of the peer. Defaults to None.
+            node (Node): The local node.
+            transport (Transport): The transport layer for communication.
+            fanout (int, optional): The number of nodes to gossip with. Defaults to 5.
         """
-        self.peer_id = peer_id or uuid.uuid4().bytes
+        self.node = node
         self.transport = transport
-        self.topology = Topology(self.peer_id, self.transport.addr)
-        self.routing = Routing(self.topology)
+        self._fanout = fanout
 
-        self._fanout = fanout or self.FANOUT
+        self.topology = Topology()
+        self.topology.add_node(node)
 
-    async def close(self):
+    async def close(self) -> None:
         """
-        Close the Gossip instance and the associated transport.
+        Close the Gossip instance by closing the transport layer.
         """
         self.transport.close()
 
     @property
-    def fanout(self):
+    def fanout(self) -> int:
+        """
+        Returns the minimum value between the fanout and the length of the topology.
+
+        Returns:
+            int: The minimum value between the fanout and the length of the topology.
+        """
         return min(self._fanout, len(self.topology))
 
     @property
-    def cycles(self):
+    def cycles(self) -> int:
+        """
+        Calculate the number of cycles required for gossip dissemination.
+
+        Returns:
+            int: The number of cycles required.
+        """
         if self.fanout == 0:
             return 0
 
@@ -59,129 +61,127 @@ class Gossip:
 
         return math.ceil(math.log(len(self.topology), self.fanout))
 
-    async def send(self, message, peer_id):
-        if not message.id:
-            raise ValueError("message id is required:", message)
+    @typeguard.typechecked
+    async def send(self, message: Message, node: Node) -> Message:
+        route = self.topology.get_shortest_route(self.node, node)
 
-        if not message.kind:
-            raise ValueError("message kind is required:", message)
+        # IMPORTANT: discovery
+        message = update_send_endpoints(
+            message,
+            send=Endpoint(route.snode, src=route.saddr),
+            recv=Endpoint(route.dnode, dst=route.daddr),
+        )
+        await self.transport.send(message, route.daddr)
+        return message
 
-        if not message.routing.src_id:
-            raise ValueError("message routing.src_id is required:", message)
+    @typeguard.typechecked
+    async def send_ack(self, message: Message, node: Node) -> Message:
+        """
+        Sends an ACK message to the specified node.
 
-        if not message.routing.dst_id:
-            raise ValueError("message routing.dst_id is required:", message)
+        Args:
+            message (Message): The original message.
+            node (Node): The destination node.
 
-        msg = Message()
-        msg.CopyFrom(message)
+        Returns:
+            Message: The ACK message sent.
+        """
+        if Message.Type.ACK in message.message_type:
+            raise ValueError("Message type must not contain ACK")
 
-        next_peer_id, next_peer_addr = self.topology.get_next_peer(peer_id)
-        msg = self.routing.set_send_route(msg, next_peer_id, next_peer_addr)
+        if Message.Type.SYN not in message.message_type:
+            raise ValueError("Message type must contain SYN for ACK")
 
-        await self.transport.send(msg, next_peer_addr)
-        return msg.id
+        message = dataclasses.replace(
+            message,
+            message_type={Message.Type.ACK},
+            route_snode=message.route_dnode,
+            route_dnode=message.route_snode,
+        )
+        return await self.send(message, node)
 
-    async def send_handshake(self, peer_id):
-        msg = Message()
-        msg.id = uuid.uuid4().bytes
-        msg.kind.append(Message.Kind.HANDSHAKE)
-        msg.kind.append(Message.Kind.SYN)
-        msg.routing.src_id = self.peer_id
-        msg.routing.dst_id = peer_id
+    @typeguard.typechecked
+    async def send_handshake(self, node: Node) -> Message:
+        """
+        Sends HANDSHAKE/SYN message to the specified node.
 
-        return await self.send(msg, peer_id)
+        Args:
+            node (Node): The destination node.
 
-    async def send_forward(self, message):
-        msg = Message()
-        msg.CopyFrom(message)
+        Returns:
+            Message: The SYN message sent.
+        """
+        message = Message(
+            route_snode=self.node.node_id,
+            route_dnode=node.node_id,
+            message_type={Message.Type.HANDSHAKE, Message.Type.SYN},
+        )
+        return await self.send(message, node)
 
-        return await self.send(msg, message.routing.dst_id)
-
-    async def send_ack(self, message):
-        if message.Kind.SYN not in message.kind:
-            raise ValueError("SYN message is required for ACK:", message)
-
-        msg = Message()
-        msg.id = message.id
-        msg.kind.append(Message.Kind.ACK)
-        msg.routing.src_id = self.peer_id
-        msg.routing.dst_id = message.routing.src_id
-        msg.topic = message.topic
-
-        return await self.send(msg, message.routing.src_id)
-
-    async def send_gossip(self, message):
-        msg = Message()
-        msg.CopyFrom(message)
-
-        if not msg.id:
-            msg.id = uuid.uuid4().bytes
-
-        if Message.Kind.GOSSIP not in msg.kind:
-            msg.kind.append(Message.Kind.GOSSIP)
-
-        if not msg.routing.src_id:
-            msg.routing.src_id = self.peer_id
+    @typeguard.typechecked
+    async def send_gossip(self, message: Message) -> list[Message]:
+        if Message.Type.GOSSIP not in message.message_type:  # pragma: no cover
+            raise ValueError("Message type must contain GOSSIP")
 
         messages = set()
-        gossip_ignore = set([self.peer_id])
-        gossip_ignore.update([r.route_id for r in msg.routing.routes])
+        gossip_ignore = set([self.node])
+        gossip_ignore.update([ep.node for ep in message.route_endpoints])
 
-        @mutex(self, msg.id)
+        @mutex(self, message.message_id)
         async def multicast():
             cycle = 0
             while cycle < self.cycles:
-                peer_ids = self.topology.sample(self.fanout, ignore=gossip_ignore)
-                for peer_id in peer_ids:
-                    m = Message()
-                    m.CopyFrom(msg)
-                    m.routing.dst_id = peer_id
-                    messages.add(await self.send(m, peer_id))
-                gossip_ignore.update(peer_ids)
+                nodes = self.topology.get_random_successor_nodes(self.node, self.fanout, exclude_nodes=gossip_ignore)
+                for node in nodes:
+                    m = dataclasses.replace(message, route_dnode=node.node_id)
+                    messages.add(await self.send(m, node))
+                gossip_ignore.update([n for n in nodes])
                 cycle += 1
 
         await multicast()
         return list(messages)
 
-    async def send_gossip_handshake(self):
-        msg = Message()
-        msg.id = uuid.uuid4().bytes
-        msg.kind.append(Message.Kind.HANDSHAKE)
-        msg.kind.append(Message.Kind.SYN)
-        msg.routing.src_id = self.peer_id
-
-        return await self.send_gossip(msg)
-
-    async def recv(self):
+    @typeguard.typechecked
+    async def recv(self) -> Message:
         while True:
-            msg, peer_addr = await self.transport.recv()
-            peer_id = msg.routing.routes[-1].route_id
-            msg = self.routing.set_recv_route(msg, peer_id, peer_addr)
+            message, addr = await self.transport.recv()
 
-            route_ids = self.topology.update(msg.routing.routes)
-            for route_id in route_ids:
-                await self.send_handshake(route_id)
+            # IMPORTANT: discovery
+            message = update_recv_endpoints(
+                message,
+                send=Endpoint(message.route_endpoints[-2].node, dst=addr),
+                recv=Endpoint(message.route_endpoints[-1].node, src=self.transport.addr),
+            )
 
-            # forward message to destination
-            if self.peer_id != msg.routing.dst_id:
-                await self.send_forward(msg)
+            # IMPORTANT: handshake
+            handshakes = {ep.node for ep in message.route_endpoints if ep.node not in self.topology}
+
+            # IMPORTANT: discovery
+            self.topology.update_routes(message.route_endpoints)
+
+            # IMPORTANT: handshake
+            for handshake in handshakes:
+                await self.send_handshake(handshake)
+
+            # IMPORTANT: forward
+            if message.route_dnode != self.node.node_id:
+                await self.send(message, self.topology.get_node(message.route_dnode))
                 continue
 
-            # ack message
-            if Message.Kind.ACK in msg.kind:
-                yield msg
+            # IMPORTANT: syn/ack
+            if Message.Type.ACK in message.message_type:
+                yield message
                 continue
 
-            # syn message
-            if Message.Kind.SYN in msg.kind:
-                await self.send_ack(msg)
+            if Message.Type.SYN in message.message_type:
+                await self.send_ack(message, self.topology.get_node(message.route_snode))
 
-            # gossip message
-            if Message.Kind.GOSSIP in msg.kind:
-                await self.send_gossip(msg)
+            # IMPORTANT: gossip
+            if Message.Type.GOSSIP in message.message_type:
+                await self.send_gossip(message)
 
-            # handshake message
-            if Message.Kind.HANDSHAKE in msg.kind:
+            # IMPORTANT: handshake
+            if Message.Type.HANDSHAKE in message.message_type:
                 continue
 
-            yield msg
+            yield message

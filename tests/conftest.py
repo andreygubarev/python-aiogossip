@@ -4,12 +4,14 @@ import uuid
 
 import pytest
 
-from aiogossip.broker import Broker
+from aiogossip.address import Address, to_ipaddress
 from aiogossip.gossip import Gossip
-from aiogossip.message_pb2 import Message
-from aiogossip.peer import Peer
-from aiogossip.topology import Topology
+from aiogossip.message import Message
+from aiogossip.node import Node
+from aiogossip.route import Route
 from aiogossip.transport import Transport
+
+random.seed(0)
 
 # Generic #####################################################################
 
@@ -28,103 +30,192 @@ def instances(request):
 # Message #####################################################################
 
 
-def get_message():
-    message = Message()
-    message.id = uuid.uuid4().bytes
+def get_message(snode, dnode):
+    message = Message(
+        route_snode=snode.node_id,
+        route_dnode=dnode.node_id,
+    )
     return message
+
+
+def get_random_message():
+    return get_message(get_node(), get_node())
 
 
 @pytest.fixture
 def message():
-    return get_message()
+    return get_random_message()
+
+
+# Address #####################################################################
+
+
+def get_address(port=0):
+    return Address(to_ipaddress("127.0.0.1"), port)
+
+
+def get_random_address():
+    return get_address(port=0)
+
+
+@pytest.fixture
+def address():
+    return get_address()
+
+
+@pytest.fixture
+def addresses(instances):
+    return [get_address() for _ in range(instances)]
+
+
+# Node #####################################################################
+
+
+def get_node():
+    node_id = uuid.uuid1()
+    addresses = {get_random_address()}
+    return Node(node_id, addresses)
+
+
+@pytest.fixture
+def node_id():
+    return uuid.uuid1()
+
+
+@pytest.fixture
+def node():
+    return get_node()
+
+
+@pytest.fixture
+def nodes(instances):
+    return [get_node() for _ in range(instances)]
+
+
+# Route #######################################################################
+
+
+def get_route(snode, saddr, dnode, daddr):
+    return Route(snode, saddr, dnode, daddr)
 
 
 # Transport ###################################################################
 
 
-def get_transport(event_loop):
-    return Transport(("localhost", 0), loop=event_loop)
+def get_transport(event_loop, address):
+    return Transport(address, loop=event_loop)
 
 
 @pytest.fixture
-def transport(event_loop):
-    return get_transport(event_loop)
+def transport(event_loop, address):
+    return get_transport(event_loop, address)
 
 
 @pytest.fixture
-def transports(event_loop, instances):
-    return [get_transport(event_loop) for _ in range(instances)]
-
-
-# Topology ####################################################################
-
-
-def get_topology(transport):
-    node_id = uuid.uuid4().bytes
-    node_addr = transport.addr
-    return Topology(node_id, node_addr)
-
-
-@pytest.fixture
-def topology(transport):
-    return get_topology(transport)
+def transports(event_loop, addresses):
+    return [get_transport(event_loop, address) for address in addresses]
 
 
 # Gossip ######################################################################
 
 
-def get_gossip(transport):
-    return Gossip(transport=transport)
+def get_gossip(node, transport, fanout=5):
+    return Gossip(node, transport, fanout)
+
+
+def get_random_gossip(event_loop):
+    node = get_node()
+    transport = get_transport(event_loop, get_address())
+    node.addresses.clear()
+    node.addresses.add(transport.addr)
+    return get_gossip(node, transport)
 
 
 @pytest.fixture
-def gossip(transport):
-    return get_gossip(transport)
+def gossip(event_loop):
+    return get_random_gossip(event_loop)
 
 
 @pytest.fixture
-def gossips(transports, random_seed):
-    gossips = [get_gossip(transport) for transport in transports]
+def gossips(event_loop, instances):
+    gossips = [get_random_gossip(event_loop) for _ in range(instances)]
     gossips_connections = math.ceil(math.sqrt(len(gossips)))
+
     for gossip in gossips:
-        gossips[0].topology.create_node(gossip.topology.node, gossip.topology.node_addr)
-        gossips[0].topology.create_node_edge(gossip.topology.node)
+        if gossips[0] == gossip:
+            continue
+
+        gossips[0].topology.add_node(gossip.node)
+        gossips[0].topology.add_route(
+            Route(
+                gossips[0].node,
+                list(gossips[0].node.addresses)[0],
+                gossip.node,
+                list(gossip.node.addresses)[0],
+            )
+        )
+
+        gossip.topology.add_node(gossips[0].node)
+        gossip.topology.add_route(
+            Route(
+                gossip.node,
+                list(gossip.node.addresses)[0],
+                gossips[0].node,
+                list(gossips[0].node.addresses)[0],
+            )
+        )
 
         for g in random.sample(gossips, gossips_connections):
-            gossip.topology.create_node(g.topology.node, g.topology.node_addr)
-            gossip.topology.create_node_edge(g.topology.node)
+            if g == gossip:
+                continue
+            gossip.topology.add_node(g.node)
+            gossip.topology.add_route(
+                Route(
+                    gossip.node,
+                    list(gossip.node.addresses)[0],
+                    g.node,
+                    list(g.node.addresses)[0],
+                )
+            )
+
+            g.topology.add_node(gossip.node)
+            g.topology.add_route(
+                Route(
+                    g.node,
+                    list(g.node.addresses)[0],
+                    gossip.node,
+                    list(gossip.node.addresses)[0],
+                )
+            )
     return gossips
 
 
-# Broker ######################################################################
-
-
-def get_broker(gossip):
-    return Broker(gossip)
-
-
 @pytest.fixture
-def broker(gossip):
-    return get_broker(gossip)
+def gossips_with_topology_star(event_loop, instances):
+    gossips = [get_random_gossip(event_loop) for _ in range(instances)]
 
+    for gossip in gossips:
+        if gossips[0] == gossip:
+            continue
 
-@pytest.fixture
-def brokers(gossips):
-    return [get_broker(gossip) for gossip in gossips]
+        gossips[0].topology.add_node(gossip.node)
+        gossips[0].topology.add_route(
+            Route(
+                gossips[0].node,
+                list(gossips[0].node.addresses)[0],
+                gossip.node,
+                list(gossip.node.addresses)[0],
+            )
+        )
 
+        gossip.topology.add_node(gossips[0].node)
+        gossip.topology.add_route(
+            Route(
+                gossip.node,
+                list(gossip.node.addresses)[0],
+                gossips[0].node,
+                list(gossips[0].node.addresses)[0],
+            )
+        )
 
-# Peer ########################################################################
-
-
-def get_peer(event_loop):
-    return Peer(loop=event_loop)
-
-
-@pytest.fixture
-def peer(event_loop):
-    return get_peer(event_loop)
-
-
-@pytest.fixture
-def peers(event_loop, instances, random_seed):
-    return [Peer(loop=event_loop) for _ in range(instances)]
+    return gossips
