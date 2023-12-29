@@ -34,7 +34,7 @@ exclude = ["tests"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "--cov --cov-report term-missing"
+addopts = "--cov-report term-missing"
 
 testpaths = ["tests"]
 pythonpath = ["src"]
@@ -42,9 +42,9 @@ pythonpath = ["src"]
 [tool.isort]
 profile = "black"
 src_paths = ["src", "test"]
-extend_skip_glob = ["**/*_pb2.py"]
+extend_skip_glob = ["**/*_pb2.py", ".venv/**"]
 honor_noqa = true
 
 [tool.black]
-extend-exclude = "_pb2\\.py"
+extend-exclude = "_pb2\\.py|\\.venv"
 line-length = 120
